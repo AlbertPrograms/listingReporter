@@ -13,9 +13,9 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
-class ApiDataFetcher {
+public class ApiDataFetcher {
   // Fetch JSON data in string line(s)
-  protected List<String> fetchJsonFromURL(String urlString) {
+  private List<String> fetchJsonFromURL(String urlString) {
     ArrayList<String> outputList = new ArrayList<>();
 
     try {
@@ -55,7 +55,7 @@ class ApiDataFetcher {
 
   // Fetch JSON data into Class instances - make sure the class field types match the data in the JSON!
   // Parameters should be the URL string, YourClass.class, YourClass[].class
-  <T> List<T> fetchDataFromURL(String urlString, Class<T> typeClass, Class<T[]> typeArrayClass) {
+  public <T> List<T> fetchDataFromURL(String urlString, Class<T> typeClass, Class<T[]> typeArrayClass) {
     ArrayList<T> outputList = new ArrayList<>();
     List<String> jsonData = fetchJsonFromURL(urlString);
 
@@ -100,7 +100,7 @@ class ApiDataFetcher {
   }
 
   // Fetches from the Mockaroo API with the key made for this project
-  <T> List<T> fetchFromMockaroo(String type, Class<T> typeClass, Class<T[]> typeArrayClass) {
+  public <T> List<T> fetchFromMockaroo(String type, Class<T> typeClass, Class<T[]> typeArrayClass) {
     return fetchDataFromURL("https://my.api.mockaroo.com/" + type + "?key=63304c70", typeClass, typeArrayClass);
   }
 }

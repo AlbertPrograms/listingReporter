@@ -1,13 +1,26 @@
 package com.AlbertPrograms.listingReporter;
 
+import java.net.ConnectException;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
-class Locations extends DBSyncedItems<Location> {
-  protected void initClassSpecifics() {
+public class Locations extends DBSyncedItems<Location> {
+  /**
+   * @param dbManager - the dbManager instance to access the database from within the item
+   * @throws SQLException - if DB can't be accessed or returns invalid values
+   * @throws ConnectException - if API can't be accessed or returns invalid values
+   */
+  public Locations(DBManager dbManager) throws SQLException, ConnectException {
+    super(dbManager);
+    sync();
+  }
+
+  protected void initItemSpecifics() {
     itemName = "location";
     itemClass = Location.class;
     itemArrayClass = Location[].class;
@@ -15,40 +28,38 @@ class Locations extends DBSyncedItems<Location> {
     insertValues = "VALUES(CAST(? AS UUID), ?, ?, ?, ?, ?, ?, ?)";
   }
 
-  protected Location readResult(ResultSet rs) throws SQLException {
-    Location location = new Location();
-    location.id = UUID.fromString(rs.getString("id"));
-    location.manager_name = rs.getString("manager_name");
-    location.phone = rs.getString("phone");
-    location.address_primary = rs.getString("address_primary");
-    location.address_secondary = rs.getString("address_secondary");
-    location.country = rs.getString("country");
-    location.town = rs.getString("town");
-    location.postal_code = rs.getString("postal_code");
-    return location;
+  public void mapResultSet(ResultSet resultSet) throws SQLException {
+    if (resultSet == null) throw new SQLException("ResultSet is null");
+
+    items = new ArrayList<>();
+
+    while (resultSet.next()) {
+      UUID id = UUID.fromString(resultSet.getString("id"));
+      String manager_name = resultSet.getString("manager_name");
+      String phone = resultSet.getString("phone");
+      String address_primary = resultSet.getString("address_primary");
+      String address_secondary = resultSet.getString("address_secondary");
+      String country = resultSet.getString("country");
+      String town = resultSet.getString("town");
+      String postal_code = resultSet.getString("postal_code");
+      items.add(new Location(id, manager_name, phone, address_primary, address_secondary, country, town, postal_code));
+    }
   }
 
-  protected List<String> createItemStringList(Location location) {
+  public List<UUID> getLookupList() {
+    return items.stream().map(Location::getId).collect(Collectors.toList());
+  }
+
+  protected List<String> createDBSerializableItem(Location location) {
     return Arrays.asList(
-      location.id.toString(),
-      location.manager_name,
-      location.phone,
-      location.address_primary,
-      location.address_secondary,
-      location.country,
-      location.town,
-      location.postal_code
+      location.getId().toString(),
+      location.getManager_name(),
+      location.getPhone(),
+      location.getAddress_primary(),
+      location.getAddress_secondary(),
+      location.getCountry(),
+      location.getTown(),
+      location.getPostal_code()
     );
   }
-}
-
-class Location {
-  UUID id;
-  String manager_name;
-  String phone;
-  String address_primary;
-  String address_secondary;
-  String country;
-  String town;
-  String postal_code;
 }

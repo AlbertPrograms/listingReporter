@@ -1,49 +1,59 @@
 package com.AlbertPrograms.listingReporter;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.stream.Collectors;
+import hirondelle.date4j.DateTime;
+
+import javax.naming.ConfigurationException;
+import java.io.IOException;
+import java.io.InputStream;
+import java.sql.SQLException;
+import java.util.TimeZone;
 
 public class ListingReporter {
-  private static boolean allSynced = true;
-  private static List<String> unsynced = new ArrayList<>();
-
-  private static void syncDBItems(DBSyncedItems ...items) {
-    System.out.println("Syncing all items");
-    for (DBSyncedItems item : items) {
-      boolean synced = item.syncData();
-      if (!synced) unsynced.add(item.itemName);
-      allSynced = allSynced && synced;
-    }
-    System.out.println("Syncing finished");
-  }
-
   public static void main(String[] args) {
-    Currencies currencies = new Currencies();
-    Marketplaces marketplaces = new Marketplaces();
-    ListingStatuses listingStatuses = new ListingStatuses();
-    Locations locations = new Locations();
-    Listings listings = new Listings(
-      // Create simple lookups for easy listing validation
-      currencies.getItems().stream().map(currency -> currency.currency_name).collect(Collectors.toList()),
-      locations.getItems().stream().map(location -> location.id).collect(Collectors.toList()),
-      marketplaces.getItems().stream().map(marketplace -> marketplace.id).collect(Collectors.toList()),
-      listingStatuses.getItems().stream().map(listingStatus -> listingStatus.id).collect(Collectors.toList())
-    );
+    DBManager dbManager = null;
+    try {
+      PropertiesReader propertiesReader = new PropertiesReader();
+      dbManager = new DBManager(
+        propertiesReader.getDbUrl(),
+        propertiesReader.getDbUsername(),
+        propertiesReader.getDbPassword()
+      );
 
-    syncDBItems(currencies, marketplaces, listingStatuses, locations, listings);
+      dbManager.connect();
+      Currencies currencies = new Currencies(dbManager);
+      Marketplaces marketplaces = new Marketplaces(dbManager);
+      ListingStatuses listingStatuses = new ListingStatuses(dbManager);
+      Locations locations = new Locations(dbManager);
+      Listings listings = new Listings(
+        dbManager,
+        // Create simple lookups for easy listing validation
+        currencies.getLookupList(),
+        locations.getLookupList(),
+        marketplaces.getLookupList(),
+        listingStatuses.getLookupList()
+      );
+      dbManager.close();
 
-    if (!allSynced) {
-      System.err.println("Error: not all data is synced:");
-      System.err.println(unsynced);
-      DBConnection.close();
-      return;
+      Reporter reporter = new Reporter(currencies, marketplaces, listings);
+      InputStream reportJsonIs = reporter.getReportAsInputStream();
+      FTPUploader ftpUploader = new FTPUploader(
+        propertiesReader.getFtpUrl(),
+        propertiesReader.getFtpUsername(),
+        propertiesReader.getFtpPassword()
+      );
+
+      ftpUploader.uploadReport(reportJsonIs);
+      System.out.println("Saved report to FTP server successfully, exiting");
+    } catch (ConfigurationException | ClassNotFoundException | IOException | SQLException e) {
+      e.printStackTrace();
+    } finally {
+      try {
+        if (dbManager != null && dbManager.isOpen()) {
+          dbManager.close();
+        }
+      } catch (SQLException e) {
+        e.printStackTrace();
+      }
     }
-
-    Reporter reporter = new Reporter(currencies, marketplaces, listings);
-    if (!reporter.saveReport()) System.err.println("Failed to save report");
-    else System.out.println("Saved report to FTP server successfully, exiting");
-
-    DBConnection.close();
   }
 }

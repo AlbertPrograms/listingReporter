@@ -6,152 +6,138 @@ import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
 
-// Generic class for all the items we need to get from the API and store in the DB
-abstract class DBSyncedItems<T> {
-  // These have to be specified in subclasses
-  String itemName;
-  Class<T> itemClass;
-  Class<T[]> itemArrayClass;
-  String insertFields;
-  String insertValues; // All non-string values must be CAST within the query
-
+/**
+ * Generic abstract class for storing items that are pulled from an API and synced in the DB
+ *
+ * @param <T> Contained item type
+ *
+ * @author Albert Kelemen
+ */
+public abstract class DBSyncedItems<T> {
+  // These have to be specified in subclasses' initItemSpecifics methods
+  protected String itemName;
+  protected Class<T> itemClass;
+  protected Class<T[]> itemArrayClass;
+  protected String insertFields;
+  protected String insertValues; // All non-string values must be CAST within the query
   // These can optionally be specified in subclasses
-  boolean changing = false; // Set this to true if the data in this class needs to be updated after storage
-  boolean canUseFallback = true; // Set this to false if
-  String onConflict = "DO NOTHING"; // To upsert, override this and use the same fields and order as insertFields
+  protected boolean changing = false; // Set this to true if the data in this class needs to be updated after storage
+  protected boolean canUseFallback = true; // Set this to false if
+  protected String onConflict = "DO NOTHING"; // To upsert, override this and use the same fields and order as insertFields
   // onConflict string format: "([conflict (id) field] DO UPDATE SET [updated_field1] = ?, [updated_field1] = ?[, ...])"
-  // Make sure to add wilcard substitute string generation at the end of the 'createItemStringList' method's string list
+  // Make sure to add wilcard substitute string generation at the end of the 'createDBSerializableItem' method's string list
 
-  List<T> items;
-  private boolean synced = false;
-  private boolean outdated = true;
+  protected List<T> items;
+  private DBManager dbManager;
 
-  DBSyncedItems() {
-    initClassSpecifics();
-    items = new ArrayList<>();
+  /**
+   * Calls the initItemSpecifics method where the item-specific fields are set.
+   * The method sync() should be called at the end of each constructor manually, since putting it here
+   * would prevent from setting extra fields via the constructor before syncing.
+   *
+   * @param dbManager - the dbManager instance to access the database from within the item
+   */
+  public DBSyncedItems(DBManager dbManager) {
+    initItemSpecifics();
+    this.dbManager = dbManager;
   }
 
-  protected abstract void initClassSpecifics();
+  /**
+   * Set item specific fields in this
+   */
+  protected abstract void initItemSpecifics();
 
-  protected abstract T readResult(ResultSet rs) throws SQLException;
+  /**
+   * Creates a serializable object from the item to store it in the DB
+   *
+   * @param item - an item from the "items" list
+   * @return a list of strings (the elements are the item's columns) that can be used in the
+   *   INSERT prepared statement to serialize the item into the DB
+   */
+  protected abstract List<String> createDBSerializableItem(T item);
 
-  protected abstract List<String> createItemStringList(T item);
+  /**
+   * Maps the resultSet received from the DB query into the "items" list of the instance
+   *
+   * @param resultSet - the resultSet from the DB query
+   * @throws SQLException - in case the query fails
+   */
+  public abstract void mapResultSet(ResultSet resultSet) throws SQLException;
 
-  // No validation by default, can be overridden if API data needs validation
+  /**
+   * Validates the list of data by returning another list containing only valid items.
+   * Doesn't validate by default, overload to add filtering function.
+   *
+   * @param apiData - the list of items to be validated
+   * @return the (filtered) list of items
+   */
   protected List<T> dataValidator(List<T> apiData) {
     return apiData;
   }
 
-  protected boolean getFromAPI() {
+  protected void getFromAPI() throws ConnectException, IllegalArgumentException {
     ApiDataFetcher apiDataFetcher = new ApiDataFetcher();
     items = dataValidator(apiDataFetcher.fetchFromMockaroo(itemName, itemClass, itemArrayClass));
-    return items != null && items.size() > 0;
-  }
-
-  private boolean loadFromDB() {
-    ResultSet rs = DBConnection.doQuery("SELECT * FROM " + itemName);
-    try {
-      if (rs == null) throw new SQLException("Select from " + itemName + " query returned invalid result");
-
-      while (rs.next()) {
-        T result = readResult(rs);
-        items.add(result);
-      }
-
-      return true;
-    } catch (SQLException e) {
-      System.err.println("Error while loading " + itemName + " data from the DB");
-      e.printStackTrace();
-      return false;
-    } catch (Exception e) {
-      // In case anything goes wrong while loading the data
-      e.printStackTrace();
-      return false;
+    if (items == null || items.size() == 0) {
+      // The APIs should always return non-null values; otherwise it's a connection error
+      throw new ConnectException();
     }
   }
 
-  private boolean saveToDB() {
+  private void loadFromDB() throws SQLException {
+    dbManager.getItemsWithSelect("SELECT * FROM " + itemName, this);
+  }
+
+  private void saveToDB() throws SQLException {
     List<List<String>> values = new ArrayList<>();
 
     for (T item : items) {
       // Invalid data will return null here
-      List<String> value = createItemStringList(item);
+      List<String> value = createDBSerializableItem(item);
       if (value != null) values.add(value);
     }
 
-    ResultSet rs = DBConnection.doBatchQuery(
+    dbManager.insertItems(
       "INSERT INTO " + itemName + " " + insertFields + " " + insertValues + " ON CONFLICT " + onConflict, values
     );
-
-    return rs != null;
   }
 
-  private boolean syncFromAPI() {
-    if (getFromAPI()) {
-      synced = saveToDB();
-      outdated = !synced;
-      return synced;
-    } else return false;
-  }
-
-  private boolean syncFromDB() {
-    if (loadFromDB()) {
-      synced = true;
-      return true;
-    } else return false;
-  }
-
-  // Setting the 'synced' and 'outdated' fields is done in the two above methods unless there's an exception
-  boolean syncData() {
-    // Only need to sync once, but only if data's not changing with each API fetch
-    if ((changing && !outdated) || (!changing && synced)) return true;
-
-    try {
-      if (changing) {
-        // If the data is constantly new, we always need to get it from the API then load
-        // everything back from the DB to cache everything
-        if (syncFromAPI()) {
-          return true;
-        } else {
-          // If API data fails, try callback if allowed, or throw ConnectException
-          if (canUseFallback) {
-            // If fallback DB data available, notify user, otherwise throw SQLException
-            if (syncFromDB()) {
-              System.out.println("Error while fetching " + itemName + " data from the API - " +
-                "using fallback data from the DB");
-              return true;
-            } else {
-              throw new SQLException("Error while fetching " + itemName + " data from the DB");
-            }
-          } else throw new ConnectException("Error while fetching " + itemName + " data from the API - " +
-            "fallback cannot be used with this type");
+  protected void sync() throws SQLException, ConnectException {
+    if (changing) {
+      // If the data is constantly new, we always need to get it from the API then load
+      // everything back from the DB to cache everything
+      try {
+        getFromAPI();
+        saveToDB();
+        loadFromDB();
+      } catch (ConnectException e){
+        e.printStackTrace();
+        // If API data fails, try callback if allowed, or throw ConnectException
+        if (canUseFallback) {
+          // If fallback DB data available, notify user, otherwise throw SQLException
+          loadFromDB();
+        } else throw new ConnectException("Error while fetching " + itemName + " data from the API - " +
+          "fallback cannot be used with this type");
+      }
+    } else {
+      // With not constantly changing data query the DB first to see if it's already stored
+      if (dbManager.getCount("SELECT COUNT(*) FROM " + itemName) == 0) {
+        // Empty table, pulling data from the API and saving it to the DB
+        try {
+          getFromAPI();
+          saveToDB();
+        } catch (ConnectException e) {
+          throw new ConnectException("Error while fetching " + itemName + " data from the API, DB has no relevant data");
         }
       } else {
-        // With not constantly changing data query the DB first to see if it's already stored
-        ResultSet rs = DBConnection.doQuery("SELECT COUNT(*) FROM " + itemName);
-        // Sync failed if the result is empty or null (DB error)
-        if (rs == null || !rs.next()) throw new SQLException("Error while fetching " + itemName + " data from the DB");
-
-        if (rs.getInt("count") == 0) {
-          // Empty table, pulling data from the API
-          if (syncFromAPI()) {
-            return true;
-          } else throw new ConnectException("Error while fetching " + itemName + " data from the API");
-        } else {
-          if (syncFromDB()) {
-            return true;
-          } else throw new SQLException("Error while fetching " + itemName + " data from the DB");
-        }
+        loadFromDB();
       }
-    } catch (SQLException | ConnectException e) {
-      e.printStackTrace();
-      synced = false;
-      return false;
     }
   }
 
-  List<T> getItems() {
-    syncData();
-    return items;
+  public List<T> getItems() {
+    return new ArrayList<>(items);
   }
+
+  public abstract List getLookupList();
 }
